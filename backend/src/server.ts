@@ -28,8 +28,8 @@ app.get('/health', (req, res) => {
 // API Routes
 app.use('/api', apiRouter);
 
-// Start server if not imported by test suite
-if (process.env.NODE_ENV !== 'test') {
+// Start server if not imported by test suite or running in Vercel serverless environment
+if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log(`=======================================================`);
     console.log(`  SMART-LIMS Backend Server Running on http://localhost:${PORT}`);
