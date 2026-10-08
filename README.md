@@ -115,7 +115,38 @@ Open `http://localhost:5173` in your browser.
 
 ---
 
-## 📁 Repository Structure
+## ⚡ Vercel Services Deployment
+
+SMART-LIMS is configured for deployment using **Vercel Services** via a root-level `vercel.json`.
+
+### Public Routing Architecture:
+- `/*` ➜ `frontend` (Vite SPA)
+- `/api/*` ➜ `backend` (Express Engine)
+
+### Deploy via Vercel CLI:
+```bash
+# 1. Install Vercel CLI
+npm i -g vercel
+
+# 2. Deploy to Vercel Services
+vercel
+```
+
+---
+
+## ⚠️ Cloud & Serverless Infrastructure Limitations
+
+### 1. Database Persistence Limitations (SQLite / `better-sqlite3`)
+- SMART-LIMS uses `better-sqlite3` as an embedded SQLite database engine.
+- On local environments, SQLite writes persistently to `./database/smart_lims.db`.
+- On Vercel Serverless Functions, the filesystem is read-only except for ephemeral `/tmp`. In cloud production, SQLite automatically initializes in `/tmp/smart_lims.db`.
+- **Note**: Data stored in serverless `/tmp` is ephemeral and resets upon cold starts or new deployments.
+
+### 2. OS Shell Monitoring Scripts Limitations
+- The Linux shell scripts in `scripts/` (`cpu_monitoring.sh`, `memory_monitoring.sh`, `disk_monitoring.sh`, etc.) execute local host diagnostics.
+- In cloud serverless environments (Vercel), these shell scripts function as **educational OS concept simulations** rather than physical serverless container monitoring.
+- All core OS algorithms (CPU scheduling, deadlock avoidance, memory paging, disk scheduling) run in pure TypeScript backend engines and are unaffected by cloud hosting.
+
 
 ```
 smart-lims/

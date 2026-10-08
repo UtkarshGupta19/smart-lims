@@ -1,6 +1,6 @@
 import { SystemMetrics, PCB, SchedulingResult, LabMachine, SoftwareLicense, AdaptiveDecision, IntegratedSimulationResult } from '../types';
 
-const API_BASE = '/api';
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 export async function fetchMetrics(): Promise<SystemMetrics> {
   const res = await fetch(`${API_BASE}/system/metrics`);

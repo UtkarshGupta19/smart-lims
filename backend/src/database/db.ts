@@ -2,16 +2,24 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-const dbDir = path.resolve(process.cwd(), '../database');
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+let dbDir = process.env.VERCEL ? '/tmp' : path.resolve(process.cwd(), '../database');
+try {
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
+} catch (e) {
+  dbDir = '/tmp';
 }
 
 const dbPath = path.join(dbDir, 'smart_lims.db');
 export const db = new Database(dbPath);
 
-// Enable WAL mode for high performance
-db.pragma('journal_mode = WAL');
+// Enable WAL mode for high performance (fallback gracefully in serverless)
+try {
+  db.pragma('journal_mode = WAL');
+} catch (e) {
+  // Ignore WAL pragma warning in serverless /tmp
+}
 
 export function initDatabase() {
   db.exec(`
