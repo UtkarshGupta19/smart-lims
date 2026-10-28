@@ -1,11 +1,155 @@
 import {
   ResourceMatrix,
   BankerResult,
+  BankerRequestValidationResult,
   CycleDetectionResult,
   DeadlockRecoveryResult,
 } from '../../types.js';
 
 export class DeadlockEngine {
+
+  /**
+   * Educational explanation of Coffman's 4 Necessary Deadlock Conditions in Lab Context
+   */
+  public getDeadlockConditionsExplanation(): Array<{ condition: string; explanation: string; labExample: string; prevention: string }> {
+    return [
+      {
+        condition: '1. Mutual Exclusion',
+        explanation: 'At least one resource must be held in a non-shareable mode. Only one process can use the resource at any given time.',
+        labExample: 'Workstation Alpha (PC-01) or a single-seat Cadence EDA license can only be actively used by one student at a time.',
+        prevention: 'Spooling or virtualization (virtual machines / license pooling) so resources can appear shareable.',
+      },
+      {
+        condition: '2. Hold and Wait',
+        explanation: 'A process must be currently holding at least one resource and requesting additional resources that are held by other processes.',
+        labExample: 'Student 1 holds Workstation PC-01 and waits for MATLAB license; Student 2 holds MATLAB license and waits for ANSYS.',
+        prevention: 'Require processes to declare and request all required resources at once before starting execution.',
+      },
+      {
+        condition: '3. No Preemption',
+        explanation: 'Resources cannot be forcibly confiscated from a process; they can only be released voluntarily after the process completes its task.',
+        labExample: 'The lab operating system does not forcefully terminate a long-running simulation job or revoke its workstation.',
+        prevention: 'If a process requests a resource that is unavailable, all currently held resources are preempted and returned to the pool.',
+      },
+      {
+        condition: '4. Circular Wait',
+        explanation: 'A closed chain of processes exists such that each process holds a resource that is needed by the next process in the chain.',
+        labExample: 'P1 holds PC-01 and waits for MATLAB (held by P2); P2 holds MATLAB and waits for PC-01 (held by P1). Neither can proceed.',
+        prevention: 'Impose a strict global numerical ordering on all lab resources (e.g., PC-01 = 1, MATLAB = 2) and require monotonic acquisition.',
+      },
+    ];
+  }
+
+  /**
+   * Banker's Resource-Request Algorithm:
+   * Decides whether an immediate resource request by process `pid` can be safely granted.
+   */
+  public validateResourceRequest(
+    matrix: ResourceMatrix,
+    pid: string,
+    request: number[]
+  ): BankerRequestValidationResult {
+    const pIdx = matrix.processes.indexOf(pid);
+    const stepLogs: string[] = [];
+
+    if (pIdx === -1) {
+      return {
+        pid,
+        request,
+        canGrant: false,
+        isSafeState: false,
+        reason: `Process ${pid} is not registered in the resource allocation state.`,
+        stepLogs: [`Process ${pid} not found.`],
+      };
+    }
+
+    const numR = matrix.resources.length;
+    const need = matrix.need && matrix.need.length > 0 ? matrix.need : this.calculateNeedMatrix(matrix.max, matrix.allocation);
+
+    stepLogs.push(`Evaluating request from ${pid}: [${request.join(', ')}] for resources [${matrix.resources.join(', ')}]`);
+
+    // Step 1: Check if Request <= Need
+    for (let j = 0; j < numR; j++) {
+      if (request[j] > need[pIdx][j]) {
+        const reason = `Error: Process ${pid} requested ${request[j]} of ${matrix.resources[j]}, which exceeds its maximum declared claim (Need: ${need[pIdx][j]}).`;
+        stepLogs.push(reason);
+        return {
+          pid,
+          request,
+          canGrant: false,
+          isSafeState: false,
+          reason,
+          stepLogs,
+        };
+      }
+    }
+    stepLogs.push(`Check 1 Passed: Request <= Need (Process is within its declared maximum demand).`);
+
+    // Step 2: Check if Request <= Available
+    for (let j = 0; j < numR; j++) {
+      if (request[j] > matrix.available[j]) {
+        const reason = `Delay: Process ${pid} must wait. Requested ${request[j]} of ${matrix.resources[j]}, but only ${matrix.available[j]} is currently available.`;
+        stepLogs.push(reason);
+        return {
+          pid,
+          request,
+          canGrant: false,
+          isSafeState: false,
+          reason,
+          stepLogs,
+        };
+      }
+    }
+    stepLogs.push(`Check 2 Passed: Request <= Available (Sufficient resources exist to satisfy request).`);
+
+    // Step 3: Tentatively allocate resources and check safety
+    const tentativeAvailable = [...matrix.available];
+    const tentativeAllocation = matrix.allocation.map(row => [...row]);
+    const tentativeNeed = need.map(row => [...row]);
+
+    for (let j = 0; j < numR; j++) {
+      tentativeAvailable[j] -= request[j];
+      tentativeAllocation[pIdx][j] += request[j];
+      tentativeNeed[pIdx][j] -= request[j];
+    }
+
+    stepLogs.push(`Hypothetical Allocation: Tentative Available = [${tentativeAvailable.join(', ')}]`);
+
+    const tentativeMatrix: ResourceMatrix = {
+      processes: [...matrix.processes],
+      resources: [...matrix.resources],
+      available: tentativeAvailable,
+      max: matrix.max.map(r => [...r]),
+      allocation: tentativeAllocation,
+      need: tentativeNeed,
+    };
+
+    const safetyResult = this.runBankersAlgorithm(tentativeMatrix);
+
+    if (safetyResult.isSafe) {
+      stepLogs.push(`Check 3 Passed: Safe sequence found -> ${safetyResult.safeSequence.join(' ➜ ')}`);
+      return {
+        pid,
+        request,
+        canGrant: true,
+        isSafeState: true,
+        safeSequence: safetyResult.safeSequence,
+        reason: `SAFE: Request granted! System remains in a safe state with execution sequence: ${safetyResult.safeSequence.join(' ➜ ')}.`,
+        stepLogs,
+      };
+    } else {
+      stepLogs.push(`Check 3 FAILED: Granting request leads to an UNSAFE STATE! No safe execution sequence exists.`);
+      return {
+        pid,
+        request,
+        canGrant: false,
+        isSafeState: false,
+        reason: `UNSAFE: Request rejected by Banker's Algorithm. Granting would create circular wait vulnerability and deadlock risk.`,
+        stepLogs,
+      };
+    }
+  }
+
 
   /**
    * Helper to compute Need matrix from Max and Allocation matrices.

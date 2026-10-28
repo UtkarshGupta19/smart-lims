@@ -1,5 +1,6 @@
 import {
   RaceConditionSimResult,
+  BookingRaceResult,
   CriticalSectionStep,
   BoundedBufferStep,
   DiningPhilosophersStep,
@@ -8,6 +9,136 @@ import {
 } from '../../types.js';
 
 export class SynchronizationEngine {
+
+  /**
+   * Controlled simulation demonstrating two competing requests attempting to book
+   * the exact same lab workstation (Critical Section).
+   * Compares unsynchronized execution (double booking) vs Mutex lock synchronization.
+   */
+  public runBookingRaceSimulation(
+    resourceId: string = 'PC-01',
+    resourceName: string = 'Workstation Alpha'
+  ): BookingRaceResult {
+    // Unsynchronized Scenario: Interleaved execution causes Double Booking
+    const unsyncSteps: BookingRaceResult['unsynchronized']['steps'] = [
+      {
+        step: 1,
+        threadId: 'Thread-1 (Ada Lovelace / P101)',
+        action: `Checks status of ${resourceId}: Returns FREE. Reads isAvailable = true.`,
+        lockHeld: false,
+        resourceStatus: 'FREE',
+      },
+      {
+        step: 2,
+        threadId: 'OS Context Switch',
+        action: `Scheduler preemption: Thread-1 interrupted before committing booking to database!`,
+        lockHeld: false,
+        resourceStatus: 'FREE (VULNERABLE WINDOW)',
+      },
+      {
+        step: 3,
+        threadId: 'Thread-2 (Alan Turing / P102)',
+        action: `Checks status of ${resourceId}: Reads stale isAvailable = true. Sees resource as FREE!`,
+        lockHeld: false,
+        resourceStatus: 'FREE',
+      },
+      {
+        step: 4,
+        threadId: 'Thread-1 (Ada Lovelace / P101)',
+        action: `Resumes execution: Writes booking record. Sets status = OCCUPIED, assignedTo = 'Ada Lovelace'.`,
+        lockHeld: false,
+        resourceStatus: 'OCCUPIED (Ada Lovelace)',
+      },
+      {
+        step: 5,
+        threadId: 'Thread-2 (Alan Turing / P102)',
+        action: `Overwrites booking record using stale check! Sets assignedTo = 'Alan Turing'. CRITICAL SECTION RACE BUG!`,
+        lockHeld: false,
+        resourceStatus: 'DOUBLE BOOKED (Overwritten to Alan Turing)',
+      },
+    ];
+
+    // Synchronized Scenario: Mutex Lock ensures strict mutual exclusion
+    const syncSteps: BookingRaceResult['synchronized']['steps'] = [
+      {
+        step: 1,
+        threadId: 'Thread-1 (Ada Lovelace / P101)',
+        action: `Executes mutex.acquire() -> Lock successfully acquired! Enters Critical Section.`,
+        lockHeld: true,
+        waitingQueue: [],
+        resourceStatus: 'FREE',
+      },
+      {
+        step: 2,
+        threadId: 'Thread-2 (Alan Turing / P102)',
+        action: `Executes mutex.acquire() -> Lock is currently held by Thread-1! Thread-2 blocked and placed in Waiting Queue.`,
+        lockHeld: true,
+        waitingQueue: ['Thread-2 (Alan Turing)'],
+        resourceStatus: 'FREE',
+      },
+      {
+        step: 3,
+        threadId: 'Thread-1 (Ada Lovelace / P101)',
+        action: `Checks ${resourceId}: Confirmed FREE. Writes booking record: assignedTo = 'Ada Lovelace'.`,
+        lockHeld: true,
+        waitingQueue: ['Thread-2 (Alan Turing)'],
+        resourceStatus: 'OCCUPIED (Ada Lovelace)',
+      },
+      {
+        step: 4,
+        threadId: 'Thread-1 (Ada Lovelace / P101)',
+        action: `Exits Critical Section. Executes mutex.release() -> Lock released and signals waiting thread.`,
+        lockHeld: false,
+        waitingQueue: [],
+        resourceStatus: 'OCCUPIED (Ada Lovelace)',
+      },
+      {
+        step: 5,
+        threadId: 'Thread-2 (Alan Turing / P102)',
+        action: `Woken up by lock release. Acquires mutex lock and enters Critical Section.`,
+        lockHeld: true,
+        waitingQueue: [],
+        resourceStatus: 'OCCUPIED (Ada Lovelace)',
+      },
+      {
+        step: 6,
+        threadId: 'Thread-2 (Alan Turing / P102)',
+        action: `Atomic check in Critical Section: Discovers ${resourceId} is ALREADY OCCUPIED by Ada Lovelace. Booking request safely rejected!`,
+        lockHeld: true,
+        waitingQueue: [],
+        resourceStatus: 'OCCUPIED (Ada Lovelace)',
+      },
+      {
+        step: 7,
+        threadId: 'Thread-2 (Alan Turing / P102)',
+        action: `Executes mutex.release() -> Lock released. Mutual exclusion preserved.`,
+        lockHeld: false,
+        waitingQueue: [],
+        resourceStatus: 'OCCUPIED (Ada Lovelace)',
+      },
+    ];
+
+    return {
+      resourceId,
+      resourceName,
+      unsynchronized: {
+        steps: unsyncSteps,
+        grantedBookings: ['Ada Lovelace (P101)', 'Alan Turing (P102)'],
+        doubleBookingDetected: true,
+        finalOwner: 'Alan Turing (P102) [Overwrote Ada Lovelace]',
+        summary: 'FAILURE: Without mutual exclusion, both competing requests were granted, resulting in a conflicting double booking.',
+      },
+      synchronized: {
+        steps: syncSteps,
+        grantedBookings: ['Ada Lovelace (P101)'],
+        rejectedBookings: ['Alan Turing (P102) [Resource already allocated in critical section]'],
+        doubleBookingDetected: false,
+        finalOwner: 'Ada Lovelace (P101)',
+        summary: 'SUCCESS: Mutex lock serialised access to the reservation check. Second request was safely rejected when the resource was verified occupied.',
+      },
+    };
+  }
+
 
   /**
    * 1. Race Condition Simulation

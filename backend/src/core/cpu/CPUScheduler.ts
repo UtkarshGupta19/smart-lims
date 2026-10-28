@@ -1,17 +1,15 @@
-import { PCB, GanttSegment, SchedulingResult, CPUMetrics } from '../../types.js';
+import { PCB, GanttSegment, SchedulingResult, SchedulingDecisionStep } from '../../types.js';
 
 export class CPUScheduler {
-  
-  /**
-   * Helper to compute overall metrics from updated PCB list and Gantt chart.
-   */
+
   private computeMetrics(
     processes: PCB[],
     ganttChart: GanttSegment[],
     contextSwitches: number,
     algorithm: string,
     queueLogs?: string[],
-    starvationAlerts?: string[]
+    starvationAlerts?: string[],
+    decisionSteps?: SchedulingDecisionStep[]
   ): SchedulingResult {
     const n = processes.length;
     if (n === 0) {
@@ -24,6 +22,9 @@ export class CPUScheduler {
         contextSwitches: 0,
         ganttChart: [],
         processes: [],
+        queueLogs: [],
+        starvationAlerts: [],
+        decisionSteps: [],
       };
     }
 
@@ -37,24 +38,25 @@ export class CPUScheduler {
       totalExecTime += p.burstTime;
     });
 
-    const maxCompletionTime = Math.max(...processes.map(p => p.completionTime || 0));
+    const maxCompletionTime = Math.max(...processes.map(p => p.completionTime || 0), 1);
     const minArrivalTime = Math.min(...processes.map(p => p.arrivalTime));
     const totalTimeSpan = Math.max(1, maxCompletionTime - minArrivalTime);
 
     const cpuUtilization = Math.min(100, (totalExecTime / totalTimeSpan) * 100);
-    const throughput = n / totalTimeSpan;
+    const throughput = Number((n / totalTimeSpan).toFixed(4));
 
     return {
       algorithm,
       avgWaitingTime: Number((totalWT / n).toFixed(2)),
       avgTurnaroundTime: Number((totalTAT / n).toFixed(2)),
       cpuUtilization: Number(cpuUtilization.toFixed(2)),
-      throughput: Number(throughput.toFixed(4)),
+      throughput,
       contextSwitches,
       ganttChart,
       processes,
       queueLogs,
       starvationAlerts,
+      decisionSteps,
     };
   }
 
@@ -62,24 +64,47 @@ export class CPUScheduler {
    * 1. FCFS (First-Come First-Served)
    */
   public fcfs(inputProcesses: PCB[]): SchedulingResult {
-    const procs = inputProcesses.map(p => ({ ...p }));
+    const procs = inputProcesses.map(p => ({ ...p, remainingTime: p.burstTime }));
     procs.sort((a, b) => a.arrivalTime - b.arrivalTime || a.pid.localeCompare(b.pid));
 
     let currentTime = 0;
     const gantt: GanttSegment[] = [];
     let contextSwitches = 0;
     let lastPid: string | null = null;
+    const decisionSteps: SchedulingDecisionStep[] = [];
 
-    procs.forEach(p => {
+    procs.forEach((p, idx) => {
       if (currentTime < p.arrivalTime) {
+        gantt.push({
+          pid: 'IDLE',
+          name: 'CPU Idle',
+          startTime: currentTime,
+          endTime: p.arrivalTime,
+          isIdle: true,
+        });
+        decisionSteps.push({
+          time: currentTime,
+          runningPid: null,
+          readyQueue: [],
+          decisionReason: `CPU Idle: Next process (${p.pid}) arrives at t=${p.arrivalTime}`,
+        });
         currentTime = p.arrivalTime;
       }
+
       if (p.responseTime === undefined) {
         p.responseTime = currentTime - p.arrivalTime;
       }
       if (lastPid && lastPid !== p.pid) {
         contextSwitches++;
       }
+
+      const remainingReady = procs.slice(idx + 1).filter(r => r.arrivalTime <= currentTime).map(r => r.pid);
+      decisionSteps.push({
+        time: currentTime,
+        runningPid: p.pid,
+        readyQueue: remainingReady,
+        decisionReason: `Dispatched ${p.pid} (${p.name}): First-come first-served queue head`,
+      });
 
       const start = currentTime;
       currentTime += p.burstTime;
@@ -99,7 +124,7 @@ export class CPUScheduler {
       lastPid = p.pid;
     });
 
-    return this.computeMetrics(procs, gantt, contextSwitches, 'FCFS');
+    return this.computeMetrics(procs, gantt, contextSwitches, 'FCFS', [], [], decisionSteps);
   }
 
   /**
@@ -112,17 +137,27 @@ export class CPUScheduler {
     let currentTime = 0;
     let contextSwitches = 0;
     let lastPid: string | null = null;
+    const decisionSteps: SchedulingDecisionStep[] = [];
 
     while (completed.length < procs.length) {
       const available = procs.filter(p => p.arrivalTime <= currentTime && !completed.some(c => c.pid === p.pid));
 
       if (available.length === 0) {
-        currentTime = Math.min(...procs.filter(p => !completed.some(c => c.pid === p.pid)).map(p => p.arrivalTime));
+        const uncompleted = procs.filter(p => !completed.some(c => c.pid === p.pid));
+        const nextArrival = Math.min(...uncompleted.map(p => p.arrivalTime));
+        gantt.push({
+          pid: 'IDLE',
+          name: 'CPU Idle',
+          startTime: currentTime,
+          endTime: nextArrival,
+          isIdle: true,
+        });
+        currentTime = nextArrival;
         continue;
       }
 
       // Sort by burst time ascending, then arrival time
-      available.sort((a, b) => a.burstTime - b.burstTime || a.arrivalTime - b.arrivalTime);
+      available.sort((a, b) => a.burstTime - b.burstTime || a.arrivalTime - b.arrivalTime || a.pid.localeCompare(b.pid));
       const p = available[0];
 
       if (lastPid && lastPid !== p.pid) {
@@ -131,6 +166,15 @@ export class CPUScheduler {
 
       p.responseTime = currentTime - p.arrivalTime;
       const start = currentTime;
+
+      const readyIds = available.slice(1).map(x => x.pid);
+      decisionSteps.push({
+        time: currentTime,
+        runningPid: p.pid,
+        readyQueue: readyIds,
+        decisionReason: `Selected ${p.pid}: Shortest burst time (${p.burstTime}s) among ready jobs`,
+      });
+
       currentTime += p.burstTime;
       p.completionTime = currentTime;
       p.turnaroundTime = p.completionTime - p.arrivalTime;
@@ -149,7 +193,7 @@ export class CPUScheduler {
       lastPid = p.pid;
     }
 
-    return this.computeMetrics(procs, gantt, contextSwitches, 'SJF Non-Preemptive');
+    return this.computeMetrics(procs, gantt, contextSwitches, 'SJF Non-Preemptive', [], [], decisionSteps);
   }
 
   /**
@@ -158,14 +202,22 @@ export class CPUScheduler {
   public srtf(inputProcesses: PCB[]): SchedulingResult {
     const procs = inputProcesses.map(p => ({ ...p, remainingTime: p.burstTime }));
     const n = procs.length;
+    if (n === 0) return this.computeMetrics([], [], 0, 'SRTF');
+
     const gantt: GanttSegment[] = [];
     let currentTime = 0;
     let completedCount = 0;
     let contextSwitches = 0;
     let currentProcess: PCB | null = null;
     let segmentStart = 0;
-
     const firstSeen: Map<string, number> = new Map();
+    const decisionSteps: SchedulingDecisionStep[] = [];
+
+    const minArrival = Math.min(...procs.map(p => p.arrivalTime));
+    if (minArrival > 0) {
+      gantt.push({ pid: 'IDLE', name: 'CPU Idle', startTime: 0, endTime: minArrival, isIdle: true });
+      currentTime = minArrival;
+    }
 
     while (completedCount < n) {
       const available = procs.filter(p => p.arrivalTime <= currentTime && p.remainingTime > 0);
@@ -180,11 +232,14 @@ export class CPUScheduler {
           });
           currentProcess = null;
         }
-        currentTime++;
+        const remaining = procs.filter(p => p.remainingTime > 0);
+        const nextTime = Math.min(...remaining.map(p => p.arrivalTime));
+        gantt.push({ pid: 'IDLE', name: 'CPU Idle', startTime: currentTime, endTime: nextTime, isIdle: true });
+        currentTime = nextTime;
         continue;
       }
 
-      available.sort((a, b) => a.remainingTime - b.remainingTime || a.arrivalTime - b.arrivalTime);
+      available.sort((a, b) => a.remainingTime - b.remainingTime || a.arrivalTime - b.arrivalTime || a.pid.localeCompare(b.pid));
       const chosen = available[0];
 
       if (!firstSeen.has(chosen.pid)) {
@@ -204,6 +259,13 @@ export class CPUScheduler {
         }
         currentProcess = chosen;
         segmentStart = currentTime;
+
+        decisionSteps.push({
+          time: currentTime,
+          runningPid: chosen.pid,
+          readyQueue: available.slice(1).map(x => x.pid),
+          decisionReason: `Preemption/Dispatch: ${chosen.pid} has shortest remaining time (${chosen.remainingTime}s)`,
+        });
       }
 
       chosen.remainingTime--;
@@ -226,11 +288,11 @@ export class CPUScheduler {
       }
     }
 
-    return this.computeMetrics(procs, gantt, contextSwitches, 'SRTF');
+    return this.computeMetrics(procs, gantt, contextSwitches, 'SRTF', [], [], decisionSteps);
   }
 
   /**
-   * 4. Priority Non-Preemptive (Lower number = higher priority)
+   * 4. Priority Non-Preemptive
    */
   public priorityNonPreemptive(inputProcesses: PCB[]): SchedulingResult {
     const procs = inputProcesses.map(p => ({ ...p, remainingTime: p.burstTime }));
@@ -239,16 +301,20 @@ export class CPUScheduler {
     let currentTime = 0;
     let contextSwitches = 0;
     let lastPid: string | null = null;
+    const decisionSteps: SchedulingDecisionStep[] = [];
 
     while (completed.length < procs.length) {
       const available = procs.filter(p => p.arrivalTime <= currentTime && !completed.some(c => c.pid === p.pid));
 
       if (available.length === 0) {
-        currentTime = Math.min(...procs.filter(p => !completed.some(c => c.pid === p.pid)).map(p => p.arrivalTime));
+        const uncompleted = procs.filter(p => !completed.some(c => c.pid === p.pid));
+        const nextArrival = Math.min(...uncompleted.map(p => p.arrivalTime));
+        gantt.push({ pid: 'IDLE', name: 'CPU Idle', startTime: currentTime, endTime: nextArrival, isIdle: true });
+        currentTime = nextArrival;
         continue;
       }
 
-      available.sort((a, b) => a.priority - b.priority || a.arrivalTime - b.arrivalTime);
+      available.sort((a, b) => a.priority - b.priority || a.arrivalTime - b.arrivalTime || a.pid.localeCompare(b.pid));
       const p = available[0];
 
       if (lastPid && lastPid !== p.pid) {
@@ -257,6 +323,14 @@ export class CPUScheduler {
 
       p.responseTime = currentTime - p.arrivalTime;
       const start = currentTime;
+
+      decisionSteps.push({
+        time: currentTime,
+        runningPid: p.pid,
+        readyQueue: available.slice(1).map(x => x.pid),
+        decisionReason: `Selected ${p.pid}: Highest priority (Priority ${p.priority})`,
+      });
+
       currentTime += p.burstTime;
       p.completionTime = currentTime;
       p.turnaroundTime = p.completionTime - p.arrivalTime;
@@ -275,15 +349,17 @@ export class CPUScheduler {
       lastPid = p.pid;
     }
 
-    return this.computeMetrics(procs, gantt, contextSwitches, 'Priority Non-Preemptive');
+    return this.computeMetrics(procs, gantt, contextSwitches, 'Priority Non-Preemptive', [], [], decisionSteps);
   }
 
   /**
-   * 5. Priority Preemptive
+   * 5. Priority Preemptive with Aging option
    */
-  public priorityPreemptive(inputProcesses: PCB[]): SchedulingResult {
+  public priorityPreemptive(inputProcesses: PCB[], applyAging: boolean = false): SchedulingResult {
     const procs = inputProcesses.map(p => ({ ...p, remainingTime: p.burstTime }));
     const n = procs.length;
+    if (n === 0) return this.computeMetrics([], [], 0, 'Priority Preemptive');
+
     const gantt: GanttSegment[] = [];
     let currentTime = 0;
     let completedCount = 0;
@@ -291,8 +367,30 @@ export class CPUScheduler {
     let currentProcess: PCB | null = null;
     let segmentStart = 0;
     const firstSeen = new Map<string, number>();
+    const decisionSteps: SchedulingDecisionStep[] = [];
+    const starvationAlerts: string[] = [];
+
+    const minArrival = Math.min(...procs.map(p => p.arrivalTime));
+    if (minArrival > 0) {
+      gantt.push({ pid: 'IDLE', name: 'CPU Idle', startTime: 0, endTime: minArrival, isIdle: true });
+      currentTime = minArrival;
+    }
 
     while (completedCount < n) {
+      // Check aging
+      if (applyAging && currentTime > 0) {
+        procs.filter(p => p.arrivalTime <= currentTime && p.remainingTime > 0 && p.pid !== currentProcess?.pid).forEach(waitProc => {
+          const waitDuration = currentTime - waitProc.arrivalTime - (waitProc.burstTime - waitProc.remainingTime);
+          if (waitDuration >= 6 && waitProc.priority > 1) {
+            waitProc.priority -= 1;
+            const alert = `Aging applied to ${waitProc.pid}: Waiting ${waitDuration}s -> Priority promoted to ${waitProc.priority}`;
+            if (!starvationAlerts.includes(alert)) {
+              starvationAlerts.push(alert);
+            }
+          }
+        });
+      }
+
       const available = procs.filter(p => p.arrivalTime <= currentTime && p.remainingTime > 0);
 
       if (available.length === 0) {
@@ -305,11 +403,14 @@ export class CPUScheduler {
           });
           currentProcess = null;
         }
-        currentTime++;
+        const remaining = procs.filter(p => p.remainingTime > 0);
+        const nextTime = Math.min(...remaining.map(p => p.arrivalTime));
+        gantt.push({ pid: 'IDLE', name: 'CPU Idle', startTime: currentTime, endTime: nextTime, isIdle: true });
+        currentTime = nextTime;
         continue;
       }
 
-      available.sort((a, b) => a.priority - b.priority || a.arrivalTime - b.arrivalTime);
+      available.sort((a, b) => a.priority - b.priority || a.arrivalTime - b.arrivalTime || a.pid.localeCompare(b.pid));
       const chosen = available[0];
 
       if (!firstSeen.has(chosen.pid)) {
@@ -329,6 +430,13 @@ export class CPUScheduler {
         }
         currentProcess = chosen;
         segmentStart = currentTime;
+
+        decisionSteps.push({
+          time: currentTime,
+          runningPid: chosen.pid,
+          readyQueue: available.slice(1).map(x => `${x.pid}(pri=${x.priority})`),
+          decisionReason: `Preempted/Dispatched ${chosen.pid}: Highest priority (${chosen.priority})`,
+        });
       }
 
       chosen.remainingTime--;
@@ -351,40 +459,48 @@ export class CPUScheduler {
       }
     }
 
-    return this.computeMetrics(procs, gantt, contextSwitches, 'Priority Preemptive');
+    return this.computeMetrics(procs, gantt, contextSwitches, 'Priority Preemptive', [], starvationAlerts, decisionSteps);
   }
 
   /**
-   * 6. Round Robin (with Time Quantum)
+   * 6. Round Robin (with Time Quantum and Aging)
    */
   public roundRobin(inputProcesses: PCB[], quantum: number = 2, applyAging: boolean = false): SchedulingResult {
     const procs = inputProcesses.map(p => ({ ...p, remainingTime: p.burstTime }));
+    const n = procs.length;
+    if (n === 0) return this.computeMetrics([], [], 0, `Round Robin (q=${quantum})`);
+
     const gantt: GanttSegment[] = [];
     const queue: PCB[] = [];
     const inQueue = new Set<string>();
     const firstSeen = new Map<string, number>();
     const starvationAlerts: string[] = [];
+    const decisionSteps: SchedulingDecisionStep[] = [];
 
     let currentTime = 0;
     let completedCount = 0;
     let contextSwitches = 0;
     let lastPid: string | null = null;
 
-    // Sort initially by arrival time
-    const sorted = [...procs].sort((a, b) => a.arrivalTime - b.arrivalTime);
+    const minArrival = Math.min(...procs.map(p => p.arrivalTime));
+    if (minArrival > 0) {
+      gantt.push({ pid: 'IDLE', name: 'CPU Idle', startTime: 0, endTime: minArrival, isIdle: true });
+      currentTime = minArrival;
+    }
 
-    // Push first processes that arrive at time 0
-    sorted.filter(p => p.arrivalTime <= currentTime).forEach(p => {
+    // Push initial processes arriving at currentTime
+    procs.filter(p => p.arrivalTime <= currentTime).forEach(p => {
       queue.push(p);
       inQueue.add(p.pid);
     });
 
-    while (completedCount < procs.length) {
+    while (completedCount < n) {
       if (queue.length === 0) {
         const remaining = procs.filter(p => p.remainingTime > 0 && !inQueue.has(p.pid));
         if (remaining.length > 0) {
           const nextArrival = Math.min(...remaining.map(r => r.arrivalTime));
-          currentTime = Math.max(currentTime, nextArrival);
+          gantt.push({ pid: 'IDLE', name: 'CPU Idle', startTime: currentTime, endTime: nextArrival, isIdle: true });
+          currentTime = nextArrival;
           procs.filter(p => p.arrivalTime <= currentTime && p.remainingTime > 0 && !inQueue.has(p.pid)).forEach(p => {
             queue.push(p);
             inQueue.add(p.pid);
@@ -408,6 +524,14 @@ export class CPUScheduler {
 
       const execTime = Math.min(quantum, p.remainingTime);
       const start = currentTime;
+
+      decisionSteps.push({
+        time: currentTime,
+        runningPid: p.pid,
+        readyQueue: queue.map(q => q.pid),
+        decisionReason: `RR Time Slice: Allocated up to ${quantum}s to ${p.pid} (remaining: ${p.remainingTime}s)`,
+      });
+
       currentTime += execTime;
       p.remainingTime -= execTime;
 
@@ -420,12 +544,13 @@ export class CPUScheduler {
 
       lastPid = p.pid;
 
-      // Add newly arrived processes to ready queue
+      // Add newly arrived processes while p was executing
       procs.filter(proc => proc.arrivalTime <= currentTime && proc.remainingTime > 0 && proc.pid !== p.pid && !inQueue.has(proc.pid) && !queue.some(q => q.pid === proc.pid)).forEach(proc => {
         queue.push(proc);
         inQueue.add(proc.pid);
       });
 
+      // If p still has remaining time, push to back of queue
       if (p.remainingTime > 0) {
         queue.push(p);
         inQueue.add(p.pid);
@@ -437,19 +562,22 @@ export class CPUScheduler {
         completedCount++;
       }
 
-      // Aging & Starvation check
+      // Aging check in Round Robin
       if (applyAging) {
         queue.forEach(waitProc => {
           const timeWaiting = currentTime - waitProc.arrivalTime - (waitProc.burstTime - waitProc.remainingTime);
-          if (timeWaiting > 10 && waitProc.priority > 1) {
+          if (timeWaiting >= 8 && waitProc.priority > 1) {
             waitProc.priority -= 1;
-            starvationAlerts.push(`Process ${waitProc.pid} aged at time ${currentTime}: Priority updated to ${waitProc.priority}`);
+            const alert = `Aging: Process ${waitProc.pid} waited ${timeWaiting}s -> Priority promoted to ${waitProc.priority}`;
+            if (!starvationAlerts.includes(alert)) {
+              starvationAlerts.push(alert);
+            }
           }
         });
       }
     }
 
-    return this.computeMetrics(procs, gantt, contextSwitches, `Round Robin (q=${quantum})`, [], starvationAlerts);
+    return this.computeMetrics(procs, gantt, contextSwitches, `Round Robin (q=${quantum})`, [], starvationAlerts, decisionSteps);
   }
 
   /**
@@ -465,19 +593,16 @@ export class CPUScheduler {
     const studentQ = procs.filter(p => p.role === 'Student' || !p.role);
 
     const queueLogs: string[] = [
-      `MLQ Initialized: System Queue (${systemQ.length} jobs), Faculty Queue (${facultyQ.length} jobs), Student Queue (${studentQ.length} jobs)`
+      `MLQ Initialized: System Queue (${systemQ.length} jobs, RR q=2), Faculty Queue (${facultyQ.length} jobs, SJF), Student Queue (${studentQ.length} jobs, FCFS)`
     ];
 
-    // System jobs run via Round Robin (q=2)
     const systemRes = this.roundRobin(systemQ, 2);
     let offset = systemRes.ganttChart.length > 0 ? Math.max(...systemRes.ganttChart.map(g => g.endTime)) : 0;
 
-    // Faculty jobs run after System jobs via SJF
     const facultyAdjusted = facultyQ.map(p => ({ ...p, arrivalTime: Math.max(p.arrivalTime, offset) }));
     const facultyRes = this.sjfNonPreemptive(facultyAdjusted);
     offset = facultyRes.ganttChart.length > 0 ? Math.max(...facultyRes.ganttChart.map(g => g.endTime)) : offset;
 
-    // Student jobs run after Faculty jobs via FCFS
     const studentAdjusted = studentQ.map(p => ({ ...p, arrivalTime: Math.max(p.arrivalTime, offset) }));
     const studentRes = this.fcfs(studentAdjusted);
 
@@ -507,7 +632,7 @@ export class CPUScheduler {
    * Queue 1: RR (q=2)
    * Queue 2: RR (q=4)
    * Queue 3: FCFS
-   * Demotion if quantum expires before completion. Promotion if waiting time exceeds threshold.
+   * Demotion on quantum expiration. Promotion on waiting time threshold.
    */
   public multilevelFeedbackQueue(inputProcesses: PCB[]): SchedulingResult {
     const procs = inputProcesses.map(p => ({ ...p, remainingTime: p.burstTime, queueLevel: 1 }));
@@ -523,7 +648,6 @@ export class CPUScheduler {
     let lastPid: string | null = null;
     const firstSeen = new Map<string, number>();
 
-    // Initial arrival into Queue 1
     procs.sort((a, b) => a.arrivalTime - b.arrivalTime).forEach(p => {
       if (p.arrivalTime === 0) {
         q1.push(p);
@@ -531,7 +655,6 @@ export class CPUScheduler {
     });
 
     while (completedCount < procs.length) {
-      // Load arriving processes into Q1
       procs.forEach(p => {
         if (p.arrivalTime <= currentTime && p.remainingTime > 0 && p.queueLevel === 1 && !q1.some(q => q.pid === p.pid) && !q2.some(q => q.pid === p.pid) && !q3.some(q => q.pid === p.pid)) {
           q1.push(p);
@@ -593,30 +716,30 @@ export class CPUScheduler {
         currentProc.waitingTime = currentProc.turnaroundTime - currentProc.burstTime;
         currentProc.state = 'TERMINATED';
         completedCount++;
-        queueLogs.push(`Process ${currentProc.pid} completed in Queue ${activeQ} at time ${currentTime}`);
+        queueLogs.push(`Process ${currentProc.pid} completed in Queue ${activeQ} at t=${currentTime}`);
       } else {
-        // Demote if quantum expired
+        // Demote
         if (activeQ === 1) {
           currentProc.queueLevel = 2;
           q2.push(currentProc);
-          queueLogs.push(`Process ${currentProc.pid} demoted from Q1 -> Q2 at time ${currentTime}`);
+          queueLogs.push(`Process ${currentProc.pid} demoted Q1 -> Q2 at t=${currentTime} (used full 2s slice)`);
         } else if (activeQ === 2) {
           currentProc.queueLevel = 3;
           q3.push(currentProc);
-          queueLogs.push(`Process ${currentProc.pid} demoted from Q2 -> Q3 at time ${currentTime}`);
+          queueLogs.push(`Process ${currentProc.pid} demoted Q2 -> Q3 at t=${currentTime} (used full 4s slice)`);
         } else {
           q3.push(currentProc);
         }
       }
 
-      // Promotion check for aging in Q3 -> Q2
+      // Aging promotion from Q3 -> Q2
       q3.forEach((p, idx) => {
         const timeInQ3 = currentTime - (p.completionTime || start);
-        if (timeInQ3 > 15) {
+        if (timeInQ3 >= 12) {
           p.queueLevel = 2;
           q3.splice(idx, 1);
           q2.push(p);
-          queueLogs.push(`Process ${p.pid} promoted from Q3 -> Q2 due to aging at time ${currentTime}`);
+          queueLogs.push(`Process ${p.pid} promoted Q3 -> Q2 due to aging at t=${currentTime}`);
         }
       });
     }

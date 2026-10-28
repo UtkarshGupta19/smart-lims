@@ -1,6 +1,8 @@
 import {
   MemoryPartition,
   PartitionAllocationResult,
+  DynamicMemoryBlock,
+  DynamicMemoryState,
   PageTableEntry,
   PageReplacementResult,
   PageReplacementStep,
@@ -8,6 +10,206 @@ import {
 } from '../../types.js';
 
 export class MemoryManager {
+  private totalMemoryMB: number = 1024;
+  private dynamicBlocks: DynamicMemoryBlock[] = [];
+  private blockIdCounter = 1;
+
+  constructor() {
+    this.resetDynamicMemory(1024);
+  }
+
+  /**
+   * Reset dynamic memory to an initial single free block or seeded sample state
+   */
+  public resetDynamicMemory(totalMB: number = 1024, seeded: boolean = true): DynamicMemoryState {
+    this.totalMemoryMB = Math.max(128, totalMB);
+    this.blockIdCounter = 1;
+
+    if (!seeded) {
+      this.dynamicBlocks = [
+        {
+          id: `BLK-${this.blockIdCounter++}`,
+          startAddress: 0,
+          size: this.totalMemoryMB,
+          isFree: true,
+          pid: null,
+          processName: null,
+        },
+      ];
+    } else {
+      // Seed a realistic college lab memory layout with sample processes and free blocks
+      this.dynamicBlocks = [
+        { id: 'BLK-1', startAddress: 0, size: 128, isFree: false, pid: 'OS-KERNEL', processName: 'Lab Kernel Services' },
+        { id: 'BLK-2', startAddress: 128, size: 256, isFree: false, pid: 'P1', processName: 'MATLAB Simulation' },
+        { id: 'BLK-3', startAddress: 384, size: 128, isFree: true, pid: null, processName: null },
+        { id: 'BLK-4', startAddress: 512, size: 300, isFree: false, pid: 'P2', processName: 'ANSYS FEA Model' },
+        { id: 'BLK-5', startAddress: 812, size: 212, isFree: true, pid: null, processName: null },
+      ];
+    }
+
+    return this.getDynamicMemoryState();
+  }
+
+  public getDynamicMemoryState(): DynamicMemoryState {
+    let allocatedMB = 0;
+    let freeMB = 0;
+    let largestFree = 0;
+
+    this.dynamicBlocks.forEach(b => {
+      if (b.isFree) {
+        freeMB += b.size;
+        if (b.size > largestFree) largestFree = b.size;
+      } else {
+        allocatedMB += b.size;
+      }
+    });
+
+    // External fragmentation is free space that is split into pieces smaller than total free
+    const externalFrag = freeMB > largestFree ? freeMB - largestFree : 0;
+
+    return {
+      totalMemoryMB: this.totalMemoryMB,
+      allocatedMemoryMB: allocatedMB,
+      freeMemoryMB: freeMB,
+      blocks: this.dynamicBlocks.map(b => ({ ...b })),
+      largestFreeBlockMB: largestFree,
+      externalFragmentationMB: externalFrag,
+    };
+  }
+
+  /**
+   * Dynamic process allocation using First Fit, Best Fit, or Worst Fit
+   */
+  public allocateDynamicProcess(
+    pid: string,
+    processName: string,
+    sizeMB: number,
+    strategy: 'FIRST_FIT' | 'BEST_FIT' | 'WORST_FIT'
+  ): { success: boolean; reason: string; memoryState: DynamicMemoryState; allocatedBlockId?: string } {
+    if (sizeMB <= 0) {
+      return {
+        success: false,
+        reason: 'Invalid memory size: Requested size must be greater than 0 MB.',
+        memoryState: this.getDynamicMemoryState(),
+      };
+    }
+
+    const freeBlocksWithIndices = this.dynamicBlocks
+      .map((b, idx) => ({ block: b, index: idx }))
+      .filter(item => item.block.isFree && item.block.size >= sizeMB);
+
+    if (freeBlocksWithIndices.length === 0) {
+      const currentState = this.getDynamicMemoryState();
+      let reason: string;
+
+      if (currentState.freeMemoryMB >= sizeMB) {
+        reason = `Allocation Failure (External Fragmentation): System has ${currentState.freeMemoryMB} MB total free memory, but the largest contiguous free block is only ${currentState.largestFreeBlockMB} MB. Process ${pid} requires ${sizeMB} MB contiguous space.`;
+      } else {
+        reason = `Allocation Failure (Out of Memory): Insufficient free space. Requested ${sizeMB} MB, but only ${currentState.freeMemoryMB} MB is free.`;
+      }
+
+      return {
+        success: false,
+        reason,
+        memoryState: currentState,
+      };
+    }
+
+    // Pick block according to strategy
+    let chosenIndex = -1;
+    if (strategy === 'FIRST_FIT') {
+      chosenIndex = freeBlocksWithIndices[0].index;
+    } else if (strategy === 'BEST_FIT') {
+      freeBlocksWithIndices.sort((a, b) => (a.block.size - sizeMB) - (b.block.size - sizeMB));
+      chosenIndex = freeBlocksWithIndices[0].index;
+    } else if (strategy === 'WORST_FIT') {
+      freeBlocksWithIndices.sort((a, b) => (b.block.size - sizeMB) - (a.block.size - sizeMB));
+      chosenIndex = freeBlocksWithIndices[0].index;
+    }
+
+    const targetBlock = this.dynamicBlocks[chosenIndex];
+    const originalSize = targetBlock.size;
+    const remainder = originalSize - sizeMB;
+    const allocatedId = `BLK-${this.blockIdCounter++}`;
+
+    // Split block
+    const allocatedBlock: DynamicMemoryBlock = {
+      id: allocatedId,
+      startAddress: targetBlock.startAddress,
+      size: sizeMB,
+      isFree: false,
+      pid,
+      processName,
+    };
+
+    if (remainder > 0) {
+      const remainderBlock: DynamicMemoryBlock = {
+        id: `BLK-${this.blockIdCounter++}`,
+        startAddress: targetBlock.startAddress + sizeMB,
+        size: remainder,
+        isFree: true,
+        pid: null,
+        processName: null,
+      };
+      this.dynamicBlocks.splice(chosenIndex, 1, allocatedBlock, remainderBlock);
+    } else {
+      this.dynamicBlocks.splice(chosenIndex, 1, allocatedBlock);
+    }
+
+    const state = this.getDynamicMemoryState();
+    return {
+      success: true,
+      reason: `Successfully allocated ${sizeMB} MB to Process ${pid} (${processName}) at address [${allocatedBlock.startAddress} - ${allocatedBlock.startAddress + sizeMB} MB] using ${strategy.replace('_', ' ')}.`,
+      memoryState: state,
+      allocatedBlockId: allocatedId,
+    };
+  }
+
+  /**
+   * Deallocate process and automatically coalesce adjacent free blocks
+   */
+  public deallocateDynamicProcess(pidOrBlockId: string): { success: boolean; reason: string; memoryState: DynamicMemoryState } {
+    const targetIdx = this.dynamicBlocks.findIndex(
+      b => !b.isFree && (b.pid === pidOrBlockId || b.id === pidOrBlockId)
+    );
+
+    if (targetIdx === -1) {
+      return {
+        success: false,
+        reason: `Process or block '${pidOrBlockId}' not found among allocated blocks.`,
+        memoryState: this.getDynamicMemoryState(),
+      };
+    }
+
+    const target = this.dynamicBlocks[targetIdx];
+    const freedPid = target.pid;
+    const freedSize = target.size;
+
+    target.isFree = true;
+    target.pid = null;
+    target.processName = null;
+
+    // Coalesce adjacent free blocks
+    const newBlocks: DynamicMemoryBlock[] = [];
+    for (let i = 0; i < this.dynamicBlocks.length; i++) {
+      const curr = this.dynamicBlocks[i];
+      if (newBlocks.length > 0 && newBlocks[newBlocks.length - 1].isFree && curr.isFree) {
+        // Merge with previous
+        const prev = newBlocks[newBlocks.length - 1];
+        prev.size += curr.size;
+      } else {
+        newBlocks.push(curr);
+      }
+    }
+    this.dynamicBlocks = newBlocks;
+
+    return {
+      success: true,
+      reason: `Deallocated ${freedSize} MB from ${freedPid}. Contiguous free blocks coalesced.`,
+      memoryState: this.getDynamicMemoryState(),
+    };
+  }
+
 
   /**
    * 1. Contiguous Memory Partition Allocation (First Fit, Best Fit, Worst Fit)

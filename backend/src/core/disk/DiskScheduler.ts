@@ -286,6 +286,77 @@ export class DiskScheduler {
       stepDetails,
     };
   }
+
+  /**
+   * Validate disk input parameters and cylinder boundaries
+   */
+  public validateInputs(
+    requestQueue: number[],
+    initialHead: number,
+    diskSize: number = 200
+  ): { valid: boolean; error?: string } {
+    if (diskSize <= 1) {
+      return { valid: false, error: 'Disk cylinder size must be greater than 1.' };
+    }
+    if (initialHead < 0 || initialHead >= diskSize) {
+      return {
+        valid: false,
+        error: `Initial head position (${initialHead}) is out of bounds. Must be between 0 and ${diskSize - 1}.`,
+      };
+    }
+    const invalid = requestQueue.filter(r => r < 0 || r >= diskSize);
+    if (invalid.length > 0) {
+      return {
+        valid: false,
+        error: `Request queue contains cylinders [${invalid.join(', ')}] outside range 0 to ${diskSize - 1}.`,
+      };
+    }
+    return { valid: true };
+  }
+
+  /**
+   * Run and compare all four primary disk scheduling algorithms (FCFS, SSTF, SCAN, C-SCAN) on identical input
+   */
+  public compareAll(
+    requestQueue: number[],
+    initialHead: number,
+    diskSize: number = 200,
+    direction: 'LEFT' | 'RIGHT' = 'RIGHT'
+  ): {
+    results: Record<string, DiskScheduleResult>;
+    comparison: Array<{ algorithm: string; totalHeadMovement: number; avgSeekDistance: number; seekSequence: number[] }>;
+    boundaryAssumptions: {
+      scan: string;
+      cscan: string;
+    };
+  } {
+    const fcfsRes = this.fcfs(requestQueue, initialHead);
+    const sstfRes = this.sstf(requestQueue, initialHead);
+    const scanRes = this.scan(requestQueue, initialHead, diskSize, direction);
+    const cscanRes = this.cscan(requestQueue, initialHead, diskSize);
+
+    const comparison = [
+      { algorithm: 'FCFS', totalHeadMovement: fcfsRes.totalHeadMovement, avgSeekDistance: fcfsRes.avgSeekDistance, seekSequence: fcfsRes.seekSequence },
+      { algorithm: 'SSTF', totalHeadMovement: sstfRes.totalHeadMovement, avgSeekDistance: sstfRes.avgSeekDistance, seekSequence: sstfRes.seekSequence },
+      { algorithm: `SCAN (${direction})`, totalHeadMovement: scanRes.totalHeadMovement, avgSeekDistance: scanRes.avgSeekDistance, seekSequence: scanRes.seekSequence },
+      { algorithm: 'C-SCAN', totalHeadMovement: cscanRes.totalHeadMovement, avgSeekDistance: cscanRes.avgSeekDistance, seekSequence: cscanRes.seekSequence },
+    ];
+
+    return {
+      results: {
+        FCFS: fcfsRes,
+        SSTF: sstfRes,
+        SCAN: scanRes,
+        'C-SCAN': cscanRes,
+      },
+      comparison,
+      boundaryAssumptions: {
+        scan: `SCAN sweeps in the specified direction (${direction}). When moving RIGHT, it travels to disk cylinder ${diskSize - 1} before reversing; when moving LEFT, it travels to cylinder 0 before reversing.`,
+        cscan: `C-SCAN treats cylinders as a circular list. It services requests in the forward direction up to ${diskSize - 1}, immediately resets head to cylinder 0 without servicing requests on the return sweep, then continues forward.`,
+      },
+    };
+  }
 }
 
 export const diskScheduler = new DiskScheduler();
+

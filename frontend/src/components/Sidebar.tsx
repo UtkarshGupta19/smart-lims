@@ -34,26 +34,26 @@ interface SidebarProps {
 }
 
 const NAV_ITEMS: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'processes', label: 'CPU Scheduling', icon: Cpu },
+  { id: 'dashboard', label: 'Overview & Metrics', icon: LayoutDashboard },
+  { id: 'resources', label: 'Workstations & Licenses', icon: Server },
+  { id: 'processes', label: 'Process & CPU Scheduling', icon: Cpu },
+  { id: 'concurrency', label: 'Concurrency & Mutex', icon: Repeat },
+  { id: 'deadlock', label: 'Deadlock & Banker’s', icon: Lock },
+  { id: 'memory', label: 'Memory Allocation', icon: HardDrive },
+  { id: 'disk', label: 'Disk Scheduling', icon: Disc },
   { id: 'threads', label: 'Threads & Workers', icon: GitBranch },
-  { id: 'concurrency', label: 'Concurrency & Sync', icon: Repeat },
-  { id: 'deadlock', label: 'Deadlock Engine', icon: Lock },
-  { id: 'memory', label: 'Memory & VM', icon: HardDrive },
-  { id: 'disk', label: 'Disk Management', icon: Disc },
-  { id: 'resources', label: 'Lab Resources', icon: Server },
   { id: 'adaptive', label: 'Adaptive Intelligence', icon: BrainCircuit },
-  { id: 'simulation', label: 'Integrated Lab Sim', icon: PlayCircle },
-  { id: 'logs', label: 'OS Logs & CLI', icon: Terminal },
-  { id: 'docs', label: 'OS Concepts Map', icon: BookOpen },
+  { id: 'simulation', label: 'Integrated Lab Workflow', icon: PlayCircle },
+  { id: 'logs', label: 'Audit Logs & Diagnostics', icon: Terminal },
+  { id: 'docs', label: 'OS Concept Mapping', icon: BookOpen },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
   return (
-    <aside className="w-64 border-r border-slate-800 bg-slate-900/60 backdrop-blur-md p-4 flex flex-col justify-between hidden md:flex shrink-0">
+    <aside className="w-64 border-r border-slate-200 bg-white p-3 flex flex-col justify-between hidden md:flex shrink-0">
       <div className="space-y-1">
-        <div className="px-3 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-          OS Modules
+        <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+          Laboratory Modules
         </div>
         {NAV_ITEMS.map(item => {
           const Icon = item.icon;
@@ -62,22 +62,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-medium transition ${
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-xs font-medium transition ${
                 isActive
-                  ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 shadow-lg shadow-cyan-500/10 font-semibold'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  ? 'bg-blue-600 text-white font-semibold shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
               }`}
             >
-              <Icon className={`w-4 h-4 ${isActive ? 'text-cyan-400' : 'text-slate-400'}`} />
+              <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-500'}`} />
               <span>{item.label}</span>
             </button>
           );
         })}
       </div>
 
-      <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800/80 text-xs">
-        <div className="text-slate-400 font-medium">Smart-LIMS Kernel v1.0</div>
-        <div className="text-[10px] text-slate-500 mt-0.5">Deterministic OS Engine</div>
+      <div className="p-3 bg-slate-50 rounded-md border border-slate-200 text-xs">
+        <div className="font-semibold text-slate-700">OS PBL Prototype</div>
+        <div className="text-[11px] text-slate-500 mt-0.5">Educational simulation mode</div>
       </div>
     </aside>
   );
