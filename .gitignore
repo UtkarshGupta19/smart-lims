@@ -34,3 +34,8 @@ yarn-error.log*
 # Vitest / Jest coverage
 coverage/
 .vitest/
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
